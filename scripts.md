@@ -14,7 +14,7 @@ pip install pandas matplotlib statsmodels seaborn
 docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=StrongPassw0rd!" -p 1433:1433 --name sqlserver -d mcr.microsoft.com/mssql/server:2022-latest
 
 # Copiar el archivo CSV al contenedor de SQL Server
-docker cp "C:\Users\Jose\Downloads\dm\data\flujo-vehicular-2017_2021_illia.csv" sqlserver:/var/opt/mssql/flujo.csv
+docker cp "C:\Users\NombreDeUsuario\Downloads\dm\data\flujo-vehicular-2017_2021_illia.csv" sqlserver:/var/opt/mssql/flujo.csv
 
 # Instalar las herramientas de línea de comandos de SQL Server
 docker run -it --rm mcr.microsoft.com/mssql-tools /bin/bash -c "/opt/mssql-tools/bin/sqlcmd -S host.docker.internal -U sa -P StrongPassw0rd!"
