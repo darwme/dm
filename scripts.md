@@ -1,3 +1,14 @@
+# Python en PowerBI
+
+(En el entorno seleccionado desde PowerBI)
+Instalar las dependencias de Python necesarias para el análisis de datos
+
+```bash
+pip install pandas matplotlib statsmodels seaborn
+```
+
+# SQL Server
+
 ```bash
 # Instalar SQL Server 2022 en Docker
 docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=StrongPassw0rd!" -p 1433:1433 --name sqlserver -d mcr.microsoft.com/mssql/server:2022-latest
@@ -75,35 +86,4 @@ GO
 -- Verificar la estructura de la nueva tabla
 SELECT TOP 10 * FROM flujo_vehicular;
 GO
-```
-
-(En el entorno seleccionado desde PowerBI)
-Instalar las dependencias de Python necesarias para el análisis de datos
-```bash
-pip install pandas matplotlib statsmodels
-```
-
-Grafico de la tendencia del flujo vehicular por hora
-```python
-import pandas as pd
-import matplotlib.pyplot as plt
-
-# Parsear fechas correctamente
-dataset['DATE_TIME'] = pd.to_datetime(dataset['DATE_TIME'], format='%d/%m/%Y %H:%M:%S', dayfirst=True)
-
-# Agrupar por hora (ya que hay duplicados)
-dataset = dataset.groupby('DATE_TIME').agg({'cantidad_pasos': 'sum'}).sort_index()
-
-# Reindexar asegurando frecuencia horaria
-dataset = dataset.asfreq('h')
-
-# Graficar
-fig, ax = plt.subplots(figsize=(12, 4))
-dataset['cantidad_pasos'].plot(ax=ax, label='Flujo Vehicular', color='steelblue')
-
-# Formato gráfico
-ax.set(title='Tendencia del flujo vehicular por hora', ylabel='Cantidad de pasos', xlabel='Fecha y hora')
-ax.legend()
-plt.tight_layout()
-plt.show()
 ```
