@@ -1,4 +1,4 @@
-## 📝 TO-DO LIST: PLAN DE TRABAJO SIMULADO (Flujo Vehicular)
+## 📝 TO-DO LIST: PLAN DE TRABAJO (Flujo Vehicular)
 
 ### 1. **Conjunto de datos**
 - [x] Cargar datos desde CSV o SQL Server
