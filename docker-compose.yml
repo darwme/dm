@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=StrongPassw0rd!
+      - MSSQL_PID=Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./data:/data
+      - ./scripts:/scripts
+    healthcheck:
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "StrongPassw0rd!" -Q "SELECT 1" || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  init-db:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+      - ./scripts:/scripts
+    command: >
+      bash -c '
+        echo "Waiting for SQL Server to be ready..."
+        sleep 10
+        echo "Initializing database..."
+        /opt/mssql-tools/bin/sqlcmd -S sqlserver -U sa -P StrongPassw0rd! -i /scripts/init-db.sql
+      '
+
+volumes:
+  sqlserver_data:
