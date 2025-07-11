@@ -211,12 +211,169 @@ GO
 
 -- 8. Vistas con tipos corregidos
 
+CREATE OR ALTER VIEW vw_fact_pasos2 AS
+WITH datos_filtrados AS (
+    SELECT 
+        fecha,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id,
+        cantidad_pasos
+    FROM fact_pasos
+),
+-- Agrupamos por fecha y hora (más dimensiones), solo para años < 2020
+datos_menores_2020 AS (
+    SELECT 
+        fecha,
+        FORMAT(fecha, 'yyyyMMdd') AS fecha_id,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id,
+        SUM(cantidad_pasos) AS cantidad_pasos
+    FROM datos_filtrados
+    WHERE YEAR(fecha) < 2020
+    GROUP BY 
+        fecha,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id
+),
+-- Ordenamos cronológicamente para aplicar la lógica de división
+ordenado AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (ORDER BY fecha, hora_id) AS rn,
+        COUNT(*) OVER () AS total
+    FROM datos_menores_2020
+),
+-- Calculamos los puntos de corte para train y valid
+particionado AS (
+    SELECT *,
+        CAST(total * 0.7 AS INT) AS n_train,
+        CAST(total * 0.2 AS INT) AS n_val
+    FROM ordenado
+),
+-- Asignamos la etiqueta de tipo_conjunto según la posición
+etiquetado_menores_2020 AS (
+    SELECT 
+        fecha,
+        fecha_id,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id,
+        cantidad_pasos,
+        CASE 
+            WHEN rn <= n_train THEN 'TRAIN'
+            WHEN rn <= n_train + n_val THEN 'VALID'
+            ELSE 'TEST'
+        END AS tipo_conjunto
+    FROM particionado
+),
+-- Agrupamos también años >= 2020, pero se marcan directamente como VALID
+agregado_mayores_igual_2020 AS (
+    SELECT 
+        fecha,
+        FORMAT(fecha, 'yyyyMMdd') AS fecha_id,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id,
+        SUM(cantidad_pasos) AS cantidad_pasos,
+        'VALID' AS tipo_conjunto
+    FROM datos_filtrados
+    WHERE YEAR(fecha) >= 2020
+    GROUP BY 
+        fecha,
+        hora_id,
+        estacion_id,
+        sentido_id,
+        tipo_vehiculo_id,
+        forma_pago_id
+)
+-- Combinamos ambas partes
+SELECT * FROM etiquetado_menores_2020
+UNION ALL
+SELECT * FROM agregado_mayores_igual_2020;
+GO
+
+CREATE OR ALTER VIEW vw_fact_pasos_forecasting AS
+SELECT  
+    CONVERT(DATETIME, CONVERT(VARCHAR, f.fecha, 23) + ' ' + CONVERT(VARCHAR, h.hora, 8)) AS date_time,
+    h.hora_id AS hour,
+    d.mes_anio AS month,
+    d.dia_semana AS weekday,
+    f.estacion_id,
+    f.sentido_id,
+    f.tipo_vehiculo_id,
+    f.forma_pago_id,
+    f.cantidad_pasos
+FROM vw_fact_pasos2 f
+INNER JOIN dim_fecha d ON FORMAT(f.fecha, 'yyyyMMdd') = d.fecha_id
+INNER JOIN dim_hora h ON f.hora_id = h.hora_id;
+GO
+
+CREATE OR ALTER VIEW vw_forecasting_pasos AS
+SELECT 
+    FORMAT(date_time, 'yyyyMMdd') AS fecha_id,
+    DATEPART(HOUR, date_time) AS hora_id,
+    [MODEL_EXOGENEAS_XGB],
+    [MODEL_EXOGENEAS_LGBM],
+    [MODEL_EXOGENEAS_CatBoost]
+FROM (
+    SELECT 
+        date_time,
+        prediccion,
+        modelo
+    FROM forecasting_pasos
+) src
+PIVOT (
+    MAX(prediccion) FOR modelo IN (
+        [MODEL_EXOGENEAS_XGB],
+        [MODEL_EXOGENEAS_LGBM],
+        [MODEL_EXOGENEAS_CatBoost]
+    )
+) AS p;
+GO
+
+CREATE OR ALTER VIEW vw_prediccion_pasos AS
+WITH cte_pred AS (
+    SELECT date_time, prediccion, modelo
+    FROM prediccion_pasos
+)
+SELECT 
+    CONCAT(FORMAT(date_time, 'yyyyMMdd'), DATEPART(HOUR, date_time)) AS id_prediccion,
+    [MODEL_EXOGENEAS_XGB],
+    [MODEL_EXOGENEAS_CatBoost],
+    [MODEL_EXOGENEAS_LGBM]
+FROM (
+    SELECT date_time, prediccion, modelo
+    FROM cte_pred
+) src
+PIVOT (
+    MAX(prediccion) FOR modelo IN (
+        [MODEL_EXOGENEAS_XGB],
+        [MODEL_EXOGENEAS_CatBoost],
+        [MODEL_EXOGENEAS_LGBM]
+    )
+) AS p;
+GO
+
 CREATE OR ALTER VIEW vw_fact_pasos AS
 SELECT
     CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
     SUM(cantidad_pasos) AS cantidad_pasos_real
 FROM fact_pasos
 GROUP BY fecha, hora_id;
+GO
 
 
 CREATE OR ALTER VIEW vw_prediccion_pasos_pivot AS
@@ -236,7 +393,7 @@ FROM
 LEFT JOIN forecasting_pasos f
     ON fp.date_time = f.date_time
 GROUP BY fp.date_time, fp.cantidad_pasos_real;
-
+GO
 
 CREATE OR ALTER VIEW vw_forecasting_pasos_pivot AS
 SELECT
@@ -255,6 +412,7 @@ FROM
 LEFT JOIN forecasting_pasos f
     ON fp.date_time = f.date_time
 GROUP BY fp.date_time, fp.cantidad_pasos_real;
+GO
 
 CREATE OR ALTER VIEW vw_predicciones_futuras_pivot AS
 SELECT
@@ -315,9 +473,7 @@ FROM
     LEFT JOIN realidad r ON ad.date_time = r.date_time
     LEFT JOIN predicciones p ON ad.date_time = p.date_time
     LEFT JOIN forecastings f ON ad.date_time = f.date_time;
-
-
-
+GO
 
 -- Limpieza de tablas de forecast
 TRUNCATE TABLE forecasting_pasos;
