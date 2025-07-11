@@ -223,18 +223,18 @@ CREATE OR ALTER VIEW vw_prediccion_pasos_pivot AS
 SELECT
     fp.date_time,
     fp.cantidad_pasos_real,
-    MAX(CASE WHEN p.modelo = 'XGBoost' THEN p.prediccion END) AS prediccion_XGBoost,
-    MAX(CASE WHEN p.modelo = 'LGBM' THEN p.prediccion END) AS prediccion_LGBM,
-    MAX(CASE WHEN p.modelo = 'CatBoost' THEN p.prediccion END) AS prediccion_CatBoost
-    -- Agrega aquí más modelos si tienes otros
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_XGB' THEN f.prediccion END) AS prediccion_XGBoost,
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_LGBM' THEN f.prediccion END) AS prediccion_LGBM,
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_CatBoost' THEN f.prediccion END) AS prediccion_CatBoost
 FROM
     (SELECT 
         CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
         SUM(cantidad_pasos) AS cantidad_pasos_real
      FROM fact_pasos
+     WHERE CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') >= '2019-09-13 12:00:00'
      GROUP BY fecha, hora_id) fp
-LEFT JOIN prediccion_pasos p
-    ON fp.date_time = p.date_time
+LEFT JOIN forecasting_pasos f
+    ON fp.date_time = f.date_time
 GROUP BY fp.date_time, fp.cantidad_pasos_real;
 
 
@@ -242,19 +242,29 @@ CREATE OR ALTER VIEW vw_forecasting_pasos_pivot AS
 SELECT
     fp.date_time,
     fp.cantidad_pasos_real,
-    MAX(CASE WHEN f.modelo = 'XGBoost' THEN f.prediccion END) AS forecast_XGBoost,
-    MAX(CASE WHEN f.modelo = 'LGBM' THEN f.prediccion END) AS forecast_LGBM,
-    MAX(CASE WHEN f.modelo = 'CatBoost' THEN f.prediccion END) AS forecast_CatBoost
-    -- Agrega aquí más modelos si tienes otros
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_XGB' THEN f.prediccion END) AS forecast_XGBoost,
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_LGBM' THEN f.prediccion END) AS forecast_LGBM,
+    MAX(CASE WHEN f.modelo = 'MODEL_EXOGENEAS_CatBoost' THEN f.prediccion END) AS forecast_CatBoost
 FROM
     (SELECT 
         CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
         SUM(cantidad_pasos) AS cantidad_pasos_real
      FROM fact_pasos
+     WHERE CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') >= '2019-09-13 12:00:00'
      GROUP BY fecha, hora_id) fp
 LEFT JOIN forecasting_pasos f
     ON fp.date_time = f.date_time
 GROUP BY fp.date_time, fp.cantidad_pasos_real;
+
+CREATE OR ALTER VIEW vw_predicciones_futuras_pivot AS
+SELECT
+    p.date_time,
+    MAX(CASE WHEN p.modelo = 'MODEL_EXOGENEAS_XGB' THEN p.prediccion END) AS prediccion_XGBoost,
+    MAX(CASE WHEN p.modelo = 'MODEL_EXOGENEAS_LGBM' THEN p.prediccion END) AS prediccion_LGBM,
+    MAX(CASE WHEN p.modelo = 'MODEL_EXOGENEAS_CatBoost' THEN p.prediccion END) AS prediccion_CatBoost
+FROM prediccion_pasos p
+GROUP BY p.date_time;
+GO
 
 CREATE OR ALTER VIEW vw_comparativo_pasos_pivot AS
 WITH all_datetimes AS (
@@ -276,18 +286,18 @@ realidad AS (
 predicciones AS (
     SELECT
         date_time,
-        MAX(CASE WHEN modelo = 'XGBoost' THEN prediccion END) AS prediccion_XGBoost,
-        MAX(CASE WHEN modelo = 'LGBM' THEN prediccion END) AS prediccion_LGBM,
-        MAX(CASE WHEN modelo = 'CatBoost' THEN prediccion END) AS prediccion_CatBoost
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_XGB' THEN prediccion END) AS prediccion_XGBoost,
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_LGBM' THEN prediccion END) AS prediccion_LGBM,
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_CatBoost' THEN prediccion END) AS prediccion_CatBoost
     FROM prediccion_pasos
     GROUP BY date_time
 ),
 forecastings AS (
     SELECT
         date_time,
-        MAX(CASE WHEN modelo = 'XGBoost' THEN prediccion END) AS forecast_XGBoost,
-        MAX(CASE WHEN modelo = 'LGBM' THEN prediccion END) AS forecast_LGBM,
-        MAX(CASE WHEN modelo = 'CatBoost' THEN prediccion END) AS forecast_CatBoost
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_XGB' THEN prediccion END) AS forecast_XGBoost,
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_LGBM' THEN prediccion END) AS forecast_LGBM,
+        MAX(CASE WHEN modelo = 'MODEL_EXOGENEAS_CatBoost' THEN prediccion END) AS forecast_CatBoost
     FROM forecasting_pasos
     GROUP BY date_time
 )
