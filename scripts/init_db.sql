@@ -1,4 +1,4 @@
--- 1. Crear base de datos y tabla origen (igual a tu ejemplo)
+-- 1. Crear base de datos y tabla origen
 CREATE DATABASE FlujoVehicular;
 GO
 
@@ -18,6 +18,7 @@ CREATE TABLE flujo_vehicular (
 GO
 
 -- 2. Cargar el CSV (ajusta la ruta según corresponda)
+SET DATEFORMAT dmy;
 BULK INSERT flujo_vehicular
 FROM '/data/flujo-vehicular-2017_2021_illia.csv'
 WITH (
@@ -48,20 +49,21 @@ EXEC sp_rename 'flujo_vehicular_limpio', 'flujo_vehicular';
 GO
 
 -- 4. Crear dimensiones
--- Hora
 CREATE TABLE dim_hora (
     hora_id INT PRIMARY KEY,
-    hora TIME(0)
+    hora TIME(0) 
 );
 GO
+
 INSERT INTO dim_hora (hora_id, hora)
-SELECT DISTINCT hora_inicio, 
-    CAST(hora_inicio AS VARCHAR) + ':00' 
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY hora_inicio) AS hora_id,
+    CAST(RIGHT('00' + CAST(hora_inicio AS VARCHAR), 2) + ':00' AS TIME(0)) AS hora
 FROM flujo_vehicular
-WHERE ISNUMERIC(hora_inicio) = 1 AND hora_inicio IS NOT NULL;
+WHERE ISNUMERIC(hora_inicio) = 1
+  AND hora_inicio IS NOT NULL;
 GO
 
--- Estacion
 CREATE TABLE dim_estacion (
     estacion_id INT PRIMARY KEY,
     estacion VARCHAR(50)
@@ -72,7 +74,6 @@ SELECT ROW_NUMBER() OVER (ORDER BY estacion), estacion
 FROM (SELECT DISTINCT estacion FROM flujo_vehicular) AS t;
 GO
 
--- Sentido
 CREATE TABLE dim_sentido (
     sentido_id INT PRIMARY KEY,
     sentido VARCHAR(50)
@@ -83,7 +84,6 @@ SELECT ROW_NUMBER() OVER (ORDER BY sentido), sentido
 FROM (SELECT DISTINCT sentido FROM flujo_vehicular) AS t;
 GO
 
--- Forma de pago
 CREATE TABLE dim_forma_pago (
     forma_pago_id INT PRIMARY KEY,
     forma_pago VARCHAR(50)
@@ -94,7 +94,6 @@ SELECT ROW_NUMBER() OVER (ORDER BY forma_pago), forma_pago
 FROM (SELECT DISTINCT forma_pago FROM flujo_vehicular) AS t;
 GO
 
--- Tipo de Vehiculo
 CREATE TABLE dim_tipo_vehiculo (
     tipo_vehiculo_id INT PRIMARY KEY,
     tipo_vehiculo VARCHAR(50)
@@ -144,12 +143,12 @@ INNER JOIN dim_forma_pago p ON f.forma_pago = p.forma_pago
 WHERE ISNUMERIC(f.hora_inicio) = 1;
 GO
 
--- 6. Crear dim_fecha (igual a tu script)
+-- 6. Crear dim_fecha
 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='dim_fecha' AND xtype='U')
 BEGIN
     CREATE TABLE dim_fecha (
         fecha DATE PRIMARY KEY,
-        id_fecha VARCHAR(8),
+        fecha_id VARCHAR(8),
         dia_semana INT,
         nombre_dia_semana VARCHAR(20),
         dia_mes INT,
@@ -166,17 +165,15 @@ BEGIN
 END
 GO
 
--- Insertar fechas únicas
 INSERT INTO dim_fecha (fecha)
 SELECT DISTINCT fecha FROM fact_pasos
 WHERE fecha IS NOT NULL
   AND fecha NOT IN (SELECT fecha FROM dim_fecha);
 GO
 
--- Actualizar columnas calculadas
 UPDATE dim_fecha
 SET 
-    id_fecha = CONVERT(VARCHAR(8), fecha, 112),
+    fecha_id = CONVERT(VARCHAR(8), fecha, 112),
     dia_semana = DATEPART(WEEKDAY, fecha),
     nombre_dia_semana = DATENAME(WEEKDAY, fecha),
     dia_mes = DAY(fecha),
@@ -212,93 +209,105 @@ CREATE TABLE prediccion_pasos (
 );
 GO
 
--- 8. Vistas de conjuntos y forecasting
-CREATE VIEW vw_fact_pasos AS
-SELECT 
-    fecha,
-    hora_id,
-    estacion_id,
-    sentido_id,
-    tipo_vehiculo_id,
-    forma_pago_id,
-    cantidad_pasos,
-    CASE WHEN fecha <= '2017-08-31' THEN 'TRAIN' ELSE 'TEST' END AS tipo_conjunto,
-    CASE WHEN fecha > '2017-08-31' THEN CONCAT(FORMAT(fecha, 'yyyyMMdd'), hora_id) ELSE NULL END AS id_prediccion
-FROM fact_pasos;
-GO
+-- 8. Vistas con tipos corregidos
 
-CREATE VIEW vw_fact_pasos_forecasting AS
-SELECT  
-    CONVERT(DATETIME, CONVERT(VARCHAR, f.fecha, 23) + ' ' + CONVERT(VARCHAR, h.hora, 8)) AS date_time,
-    h.hora_id AS hour,
-    d.mes_anio AS month,
-    d.dia_semana AS weekday,
-    f.estacion_id,
-    f.sentido_id,
-    f.tipo_vehiculo_id,
-    f.forma_pago_id,
-    f.cantidad_pasos,
-    CAST(IIF(CASE WHEN f.fecha <= '2017-08-31' THEN 'TRAIN' ELSE 'TEST' END = 'TRAIN', 0, 1) AS INT) AS tipo_conjunto
-FROM vw_fact_pasos f
-INNER JOIN dim_fecha d ON FORMAT(f.fecha, 'yyyyMMdd') = d.id_fecha
-INNER JOIN dim_hora h ON f.hora_id = h.hora_id;
-GO
+CREATE OR ALTER VIEW vw_fact_pasos AS
+SELECT
+    CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
+    SUM(cantidad_pasos) AS cantidad_pasos_real
+FROM fact_pasos
+GROUP BY fecha, hora_id;
 
--- Vista pivote para forecasting
-CREATE VIEW vw_forecasting_pasos AS
-SELECT 
-    FORMAT(date_time, 'yyyyMMdd') AS fecha_id,
-    DATEPART(HOUR, date_time) AS hora_id,
-    [MODEL_FORECASTER],
-    [MODEL_EXOGENEAS],
-    [MODEL_EXOGENEAS_LGBM],
-    [MODEL_EXOGENEAS_CatBoost],
-    [MODEL_EXOGENEAS_LSTM]
-FROM (
-    SELECT 
+
+CREATE OR ALTER VIEW vw_prediccion_pasos_pivot AS
+SELECT
+    fp.date_time,
+    fp.cantidad_pasos_real,
+    MAX(CASE WHEN p.modelo = 'XGBoost' THEN p.prediccion END) AS prediccion_XGBoost,
+    MAX(CASE WHEN p.modelo = 'LGBM' THEN p.prediccion END) AS prediccion_LGBM,
+    MAX(CASE WHEN p.modelo = 'CatBoost' THEN p.prediccion END) AS prediccion_CatBoost
+    -- Agrega aquí más modelos si tienes otros
+FROM
+    (SELECT 
+        CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
+        SUM(cantidad_pasos) AS cantidad_pasos_real
+     FROM fact_pasos
+     GROUP BY fecha, hora_id) fp
+LEFT JOIN prediccion_pasos p
+    ON fp.date_time = p.date_time
+GROUP BY fp.date_time, fp.cantidad_pasos_real;
+
+
+CREATE OR ALTER VIEW vw_forecasting_pasos_pivot AS
+SELECT
+    fp.date_time,
+    fp.cantidad_pasos_real,
+    MAX(CASE WHEN f.modelo = 'XGBoost' THEN f.prediccion END) AS forecast_XGBoost,
+    MAX(CASE WHEN f.modelo = 'LGBM' THEN f.prediccion END) AS forecast_LGBM,
+    MAX(CASE WHEN f.modelo = 'CatBoost' THEN f.prediccion END) AS forecast_CatBoost
+    -- Agrega aquí más modelos si tienes otros
+FROM
+    (SELECT 
+        CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
+        SUM(cantidad_pasos) AS cantidad_pasos_real
+     FROM fact_pasos
+     GROUP BY fecha, hora_id) fp
+LEFT JOIN forecasting_pasos f
+    ON fp.date_time = f.date_time
+GROUP BY fp.date_time, fp.cantidad_pasos_real;
+
+CREATE OR ALTER VIEW vw_comparativo_pasos_pivot AS
+WITH all_datetimes AS (
+    SELECT DISTINCT
+        CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time
+    FROM fact_pasos
+    UNION
+    SELECT DISTINCT date_time FROM prediccion_pasos
+    UNION
+    SELECT DISTINCT date_time FROM forecasting_pasos
+),
+realidad AS (
+    SELECT
+        CONCAT(CONVERT(CHAR(10), fecha, 120), ' ', RIGHT('00' + CAST(hora_id-1 AS VARCHAR), 2), ':00') AS date_time,
+        SUM(cantidad_pasos) AS cantidad_pasos_real
+    FROM fact_pasos
+    GROUP BY fecha, hora_id
+),
+predicciones AS (
+    SELECT
         date_time,
-        prediccion,
-        modelo
-    FROM forecasting_pasos
-) src
-PIVOT (
-    MAX(prediccion) FOR modelo IN (
-        [MODEL_FORECASTER],
-        [MODEL_EXOGENEAS],
-        [MODEL_EXOGENEAS_LGBM],
-        [MODEL_EXOGENEAS_CatBoost],
-        [MODEL_EXOGENEAS_LSTM]
-    )
-) AS p;
-GO
-
--- Vista pivote para predicción
-CREATE VIEW vw_prediccion_pasos AS
-WITH cte_pred AS (
-    SELECT date_time, prediccion, modelo
+        MAX(CASE WHEN modelo = 'XGBoost' THEN prediccion END) AS prediccion_XGBoost,
+        MAX(CASE WHEN modelo = 'LGBM' THEN prediccion END) AS prediccion_LGBM,
+        MAX(CASE WHEN modelo = 'CatBoost' THEN prediccion END) AS prediccion_CatBoost
     FROM prediccion_pasos
+    GROUP BY date_time
+),
+forecastings AS (
+    SELECT
+        date_time,
+        MAX(CASE WHEN modelo = 'XGBoost' THEN prediccion END) AS forecast_XGBoost,
+        MAX(CASE WHEN modelo = 'LGBM' THEN prediccion END) AS forecast_LGBM,
+        MAX(CASE WHEN modelo = 'CatBoost' THEN prediccion END) AS forecast_CatBoost
+    FROM forecasting_pasos
+    GROUP BY date_time
 )
-SELECT 
-    CONCAT(FORMAT(date_time, 'yyyyMMdd'), DATEPART(HOUR, date_time)) AS id_prediccion,
-    [MODEL_FORECASTER],
-    [MODEL_EXOGENEAS],
-    [MODEL_EXOGENEAS_CatBoost],
-    [MODEL_EXOGENEAS_LGBM],
-    [MODEL_EXOGENEAS_LSTM]
-FROM (
-    SELECT date_time, prediccion, modelo
-    FROM cte_pred
-) src
-PIVOT (
-    MAX(prediccion) FOR modelo IN (
-        [MODEL_FORECASTER],
-        [MODEL_EXOGENEAS],
-        [MODEL_EXOGENEAS_CatBoost],
-        [MODEL_EXOGENEAS_LGBM],
-        [MODEL_EXOGENEAS_LSTM]
-    )
-) AS p;
-GO
+SELECT
+    ad.date_time,
+    r.cantidad_pasos_real,
+    p.prediccion_XGBoost,
+    p.prediccion_LGBM,
+    p.prediccion_CatBoost,
+    f.forecast_XGBoost,
+    f.forecast_LGBM,
+    f.forecast_CatBoost
+FROM
+    all_datetimes ad
+    LEFT JOIN realidad r ON ad.date_time = r.date_time
+    LEFT JOIN predicciones p ON ad.date_time = p.date_time
+    LEFT JOIN forecastings f ON ad.date_time = f.date_time;
+
+
+
 
 -- Limpieza de tablas de forecast
 TRUNCATE TABLE forecasting_pasos;
